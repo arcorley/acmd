@@ -1,4 +1,5 @@
 import ACMDCore
+import AppKit
 import SwiftUI
 
 struct MarkdownCommands: Commands {
@@ -6,6 +7,26 @@ struct MarkdownCommands: Commands {
     @FocusedValue(\.editorLayoutMode) private var layoutMode
 
     var body: some Commands {
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            Menu("Find") {
+                Button("Find…") {
+                    performFindAction(.showFindInterface)
+                }
+                .keyboardShortcut("f", modifiers: .command)
+
+                Button("Find Next") {
+                    performFindAction(.nextMatch)
+                }
+                .keyboardShortcut("g", modifiers: .command)
+
+                Button("Find Previous") {
+                    performFindAction(.previousMatch)
+                }
+                .keyboardShortcut("g", modifiers: [.command, .shift])
+            }
+        }
+
         CommandGroup(replacing: .textFormatting) {
             Button("Bold") { editor?.perform(.bold) }
                 .keyboardShortcut("b", modifiers: .command)
@@ -75,5 +96,72 @@ struct MarkdownCommands: Commands {
 
     private var canFormat: Bool {
         editor?.canEdit == true && layoutMode?.wrappedValue != .preview
+    }
+
+    /// Sends the standard AppKit Find action through the active responder
+    /// chain. This keeps split-view search focus-aware: NSTextView handles the
+    /// source pane, while PreviewFindContainer handles the rendered pane.
+    private func performFindAction(_ action: NSTextFinder.Action) {
+        let sender = NSMenuItem()
+        sender.action = #selector(NSResponder.performTextFinderAction(_:))
+        sender.tag = action.rawValue
+
+        if let preview = activePreviewFindContainer() {
+            preview.performTextFinderAction(sender)
+            return
+        }
+        NSApp.sendAction(sender.action!, to: nil, from: sender)
+    }
+
+    private func activePreviewFindContainer() -> PreviewFindContainer? {
+        guard let window = NSApp.keyWindow,
+              let contentView = window.contentView,
+              let preview = descendantPreview(in: contentView) else { return nil }
+
+        // The collapsed pane can briefly retain AppKit focus while SwiftUI
+        // updates the layout. Always honor the visible single-pane mode first.
+        if layoutMode?.wrappedValue == .preview {
+            return preview
+        }
+        if layoutMode?.wrappedValue == .editor {
+            preview.markInteractionInactive()
+            return nil
+        }
+
+        let focusedView = window.firstResponder as? NSView
+        if let focusedView {
+            if let focusedPreview = ancestorPreview(of: focusedView) {
+                return focusedPreview
+            }
+            if focusedView is NSTextView {
+                preview.markInteractionInactive()
+                return nil
+            }
+        }
+
+        return preview.hasRecentInteraction ? preview : nil
+    }
+
+    private func ancestorPreview(of view: NSView) -> PreviewFindContainer? {
+        var candidate: NSView? = view
+        while let current = candidate {
+            if let preview = current as? PreviewFindContainer {
+                return preview
+            }
+            candidate = current.superview
+        }
+        return nil
+    }
+
+    private func descendantPreview(in view: NSView) -> PreviewFindContainer? {
+        if let preview = view as? PreviewFindContainer {
+            return preview
+        }
+        for subview in view.subviews {
+            if let preview = descendantPreview(in: subview) {
+                return preview
+            }
+        }
+        return nil
     }
 }

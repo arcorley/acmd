@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import ACMDCore
 
@@ -9,15 +10,24 @@ struct MarkdownEditorView: NSViewRepresentable {
     @Binding private var text: String
     @ObservedObject private var controller: MarkdownEditorController
     private let isActive: Bool
+    private let showsVerticalScroller: Bool
+    private let scrollSynchronizer: MarkdownScrollSynchronizer?
+    private let findSession: MarkdownFindSession?
 
     init(
         text: Binding<String>,
         controller: MarkdownEditorController,
-        isActive: Bool = true
+        isActive: Bool = true,
+        showsVerticalScroller: Bool = true,
+        scrollSynchronizer: MarkdownScrollSynchronizer? = nil,
+        findSession: MarkdownFindSession? = nil
     ) {
         _text = text
         self.controller = controller
         self.isActive = isActive
+        self.showsVerticalScroller = showsVerticalScroller
+        self.scrollSynchronizer = scrollSynchronizer
+        self.findSession = findSession
     }
 
     func makeCoordinator() -> Coordinator {
@@ -29,7 +39,7 @@ struct MarkdownEditorView: NSViewRepresentable {
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = true
         scrollView.backgroundColor = .textBackgroundColor
-        scrollView.hasVerticalScroller = true
+        scrollView.hasVerticalScroller = showsVerticalScroller
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
 
@@ -56,17 +66,21 @@ struct MarkdownEditorView: NSViewRepresentable {
         textView.delegate = context.coordinator
         scrollView.documentView = textView
 
-        context.coordinator.connect(textView)
+        context.coordinator.connect(textView, in: scrollView)
+        scrollSynchronizer?.attach(scrollView, as: .editor)
         context.coordinator.highlight()
         return scrollView
     }
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? MarkdownTextView else { return }
+        scrollView.hasVerticalScroller = showsVerticalScroller
+        scrollSynchronizer?.attach(scrollView, as: .editor)
         context.coordinator.update(parent: self, textView: textView)
     }
 
     static func dismantleNSView(_ scrollView: NSScrollView, coordinator: Coordinator) {
+        coordinator.parent.scrollSynchronizer?.detach(scrollView, from: .editor)
         coordinator.disconnect()
     }
 
@@ -117,26 +131,45 @@ struct MarkdownEditorView: NSViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, NSTextViewDelegate {
-        private var parent: MarkdownEditorView
+    final class Coordinator: NSObject, NSTextViewDelegate, @preconcurrency NSLayoutManagerDelegate {
+        fileprivate var parent: MarkdownEditorView
         private weak var textView: MarkdownTextView?
+        private weak var scrollView: NSScrollView?
         private weak var attachedController: MarkdownEditorController?
+        private weak var attachedFindSession: MarkdownFindSession?
         private var isApplyingExternalText = false
         private let highlighter = MarkdownSyntaxHighlighter(baseFont: MarkdownEditorView.editorFont)
         private var highlightTask: Task<Void, Never>?
+        private var findSessionCancellable: AnyCancellable?
+        private var findBarPollTimer: Timer?
+        private var hasObservedFindBar = false
+        private var observedFindBarVisible = false
+        private var observedFindBarQuery: String?
+        private var activeFindQuery: String?
+        private var renderedFindQuery: String?
+        private var renderedFindText: String?
+        private var renderedFindRanges: [NSRange] = []
+        private var defaultSelectedTextAttributes: [NSAttributedString.Key: Any]?
 
         init(parent: MarkdownEditorView) {
             self.parent = parent
         }
 
-        fileprivate func connect(_ textView: MarkdownTextView) {
+        fileprivate func connect(_ textView: MarkdownTextView, in scrollView: NSScrollView) {
             self.textView = textView
+            self.scrollView = scrollView
+            defaultSelectedTextAttributes = textView.selectedTextAttributes
+            textView.layoutManager?.delegate = self
             enforceActivation(on: textView)
             attachedController = parent.controller
             parent.controller.attach(to: textView)
             textView.onAppearanceChange = { [weak self] in
                 self?.highlight()
             }
+            textView.onFindAction = { [weak self] action in
+                self?.nativeFindActionWasPerformed(action)
+            }
+            observeFindSession()
         }
 
         fileprivate func update(parent: MarkdownEditorView, textView: MarkdownTextView) {
@@ -152,6 +185,10 @@ struct MarkdownEditorView: NSViewRepresentable {
                 attachedController = parent.controller
             }
             parent.controller.attach(to: textView)
+
+            if attachedFindSession !== parent.findSession {
+                observeFindSession()
+            }
 
             guard textView.string != parent.text else { return }
 
@@ -178,6 +215,7 @@ struct MarkdownEditorView: NSViewRepresentable {
             isApplyingExternalText = false
 
             highlight()
+            refreshFindHighlights(force: true)
             parent.controller.editorStateDidChange(textView)
         }
 
@@ -194,11 +232,26 @@ struct MarkdownEditorView: NSViewRepresentable {
             guard let textView else { return }
             highlightTask?.cancel()
             highlightTask = nil
+            stopFindBarPolling()
+            findSessionCancellable?.cancel()
+            findSessionCancellable = nil
+            attachedFindSession = nil
+            activeFindQuery = nil
+            refreshFindHighlights(force: true)
+            if let defaultSelectedTextAttributes {
+                textView.selectedTextAttributes = defaultSelectedTextAttributes
+            }
             textView.onAppearanceChange = nil
+            textView.onFindAction = nil
+            if textView.layoutManager?.delegate === self {
+                textView.layoutManager?.delegate = nil
+            }
             attachedController?.detach(from: textView)
             textView.delegate = nil
             self.textView = nil
+            scrollView = nil
             attachedController = nil
+            defaultSelectedTextAttributes = nil
         }
 
         func textDidBeginEditing(_ notification: Notification) {
@@ -217,17 +270,214 @@ struct MarkdownEditorView: NSViewRepresentable {
                 parent.text = textView.string
             }
             highlight()
+            refreshFindHighlights(force: true)
             parent.controller.editorStateDidChange(textView)
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? MarkdownTextView else { return }
+            refreshFindSelectionAppearance(in: textView)
             parent.controller.editorStateDidChange(textView)
         }
 
         func textDidEndEditing(_ notification: Notification) {
             guard let textView = notification.object as? MarkdownTextView else { return }
             parent.controller.editorStateDidChange(textView)
+        }
+
+        private func observeFindSession() {
+            stopFindBarPolling()
+            findSessionCancellable?.cancel()
+            findSessionCancellable = nil
+            attachedFindSession = parent.findSession
+            hasObservedFindBar = false
+            observedFindBarVisible = false
+            observedFindBarQuery = nil
+
+            guard let findSession = parent.findSession else {
+                activeFindQuery = nil
+                refreshFindHighlights(force: true)
+                return
+            }
+
+            findSessionCancellable = findSession.$state.sink { [weak self] state in
+                self?.applyFindState(state)
+            }
+            pollNativeFindBar()
+        }
+
+        private func applyFindState(_ state: MarkdownFindSession.State) {
+            activeFindQuery = state.active ? state.query : nil
+            refreshFindHighlights()
+        }
+
+        private func startFindBarPolling() {
+            if findBarPollTimer == nil {
+                let timer = Timer(
+                    timeInterval: 0.1,
+                    target: self,
+                    selector: #selector(pollNativeFindBarTimer(_:)),
+                    userInfo: nil,
+                    repeats: true
+                )
+                findBarPollTimer = timer
+                RunLoop.main.add(timer, forMode: .common)
+            }
+        }
+
+        private func stopFindBarPolling() {
+            findBarPollTimer?.invalidate()
+            findBarPollTimer = nil
+        }
+
+        @objc private func pollNativeFindBarTimer(_ timer: Timer) {
+            pollNativeFindBar()
+        }
+
+        private func pollNativeFindBar() {
+            guard let scrollView,
+                  let findSession = attachedFindSession else { return }
+
+            let isVisible = scrollView.isFindBarVisible
+            let query = isVisible
+                ? nativeFindBarQuery(in: scrollView) ?? findSession.state.query
+                : nil
+
+            guard hasObservedFindBar else {
+                hasObservedFindBar = true
+                observedFindBarVisible = isVisible
+                observedFindBarQuery = query
+                if isVisible {
+                    startFindBarPolling()
+                    findSession.activate(source: .editor, query: query)
+                }
+                return
+            }
+
+            if isVisible {
+                startFindBarPolling()
+                if !observedFindBarVisible {
+                    findSession.activate(source: .editor, query: query)
+                } else if query != observedFindBarQuery, let query {
+                    findSession.update(query: query, source: .editor)
+                }
+            } else if observedFindBarVisible {
+                findSession.deactivate(source: .editor)
+            }
+
+            observedFindBarVisible = isVisible
+            observedFindBarQuery = query
+            if !isVisible {
+                stopFindBarPolling()
+            }
+        }
+
+        private func nativeFindActionWasPerformed(_ action: NSTextFinder.Action) {
+            guard let findSession = attachedFindSession else { return }
+
+            switch action {
+            case .showFindInterface, .showReplaceInterface:
+                startFindBarPolling()
+                let query = scrollView.flatMap { nativeFindBarQuery(in: $0) }
+                    ?? findSession.state.query
+                findSession.activate(source: .editor, query: query)
+            case .nextMatch, .previousMatch:
+                if let query = scrollView.flatMap({ nativeFindBarQuery(in: $0) }),
+                   query != findSession.state.query {
+                    findSession.update(query: query, source: .editor)
+                }
+                findSession.navigate(
+                    action == .previousMatch ? .previous : .next,
+                    source: .editor
+                )
+            case .setSearchString:
+                if let query = scrollView.flatMap({ nativeFindBarQuery(in: $0) }) {
+                    findSession.update(query: query, source: .editor)
+                }
+            case .hideFindInterface:
+                findSession.deactivate(source: .editor)
+            default:
+                break
+            }
+
+            // AppKit can finish installing or updating the native bar on the
+            // following run-loop turn.
+            DispatchQueue.main.async { [weak self] in
+                self?.pollNativeFindBar()
+            }
+        }
+
+        private func nativeFindBarQuery(in scrollView: NSScrollView) -> String? {
+            if let findBarView = scrollView.findBarView,
+               let searchField = findSearchField(in: findBarView) {
+                return searchField.stringValue
+            }
+            return NSPasteboard(name: .find).string(forType: .string)
+        }
+
+        private func findSearchField(in view: NSView) -> NSSearchField? {
+            if let searchField = view as? NSSearchField {
+                return searchField
+            }
+            for subview in view.subviews {
+                if let searchField = findSearchField(in: subview) {
+                    return searchField
+                }
+            }
+            return nil
+        }
+
+        private func refreshFindHighlights(force: Bool = false) {
+            guard let textView, let layoutManager = textView.layoutManager else { return }
+
+            let text = textView.string
+            if force
+                || renderedFindQuery != activeFindQuery
+                || renderedFindText != text {
+                let fullRange = NSRange(location: 0, length: (text as NSString).length)
+                renderedFindRanges = activeFindQuery.map {
+                    MarkdownFindMatcher.ranges(of: $0, in: text)
+                } ?? []
+
+                if fullRange.length > 0 {
+                    layoutManager.removeTemporaryAttribute(
+                        MarkdownFindHighlighting.markerAttribute,
+                        forCharacterRange: fullRange
+                    )
+
+                    for range in renderedFindRanges {
+                        layoutManager.addTemporaryAttribute(
+                            MarkdownFindHighlighting.markerAttribute,
+                            value: true,
+                            forCharacterRange: range
+                        )
+                    }
+                    layoutManager.invalidateDisplay(forCharacterRange: fullRange)
+                }
+
+                renderedFindQuery = activeFindQuery
+                renderedFindText = text
+            }
+            refreshFindSelectionAppearance(in: textView)
+        }
+
+        private func refreshFindSelectionAppearance(in textView: NSTextView) {
+            guard let defaultSelectedTextAttributes else { return }
+            textView.selectedTextAttributes = MarkdownFindHighlighting.selectionAttributes(
+                defaultSelectedTextAttributes,
+                selectedRange: textView.selectedRange(),
+                matchRanges: renderedFindRanges
+            )
+        }
+
+        func layoutManager(
+            _ layoutManager: NSLayoutManager,
+            shouldUseTemporaryAttributes attrs: [NSAttributedString.Key: Any],
+            forDrawingToScreen toScreen: Bool,
+            atCharacterIndex charIndex: Int,
+            effectiveRange effectiveCharRange: NSRangePointer?
+        ) -> [NSAttributedString.Key: Any]? {
+            MarkdownFindHighlighting.attributes(attrs, drawingToScreen: toScreen)
         }
 
         func highlight() {
@@ -272,10 +522,20 @@ struct MarkdownEditorView: NSViewRepresentable {
 @MainActor
 fileprivate final class MarkdownTextView: NSTextView {
     var onAppearanceChange: (() -> Void)?
+    var onFindAction: ((NSTextFinder.Action) -> Void)?
 
     override func viewDidChangeEffectiveAppearance() {
         super.viewDidChangeEffectiveAppearance()
         onAppearanceChange?()
+    }
+
+    override func performTextFinderAction(_ sender: Any?) {
+        let action = (sender as? NSValidatedUserInterfaceItem)
+            .flatMap { NSTextFinder.Action(rawValue: $0.tag) }
+        super.performTextFinderAction(sender)
+        if let action {
+            onFindAction?(action)
+        }
     }
 
     override func insertNewline(_ sender: Any?) {
@@ -295,6 +555,41 @@ fileprivate final class MarkdownTextView: NSTextView {
         case .exit(let range, let replacement):
             insertText(replacement as NSString, replacementRange: range)
         }
+    }
+}
+
+enum MarkdownFindHighlighting {
+    static let markerAttribute = NSAttributedString.Key("ACMD.MarkdownFindMatch")
+
+    static func selectionAttributes(
+        _ baseAttributes: [NSAttributedString.Key: Any],
+        selectedRange: NSRange,
+        matchRanges: [NSRange]
+    ) -> [NSAttributedString.Key: Any] {
+        guard selectedRange.length > 0,
+              matchRanges.contains(where: { NSEqualRanges($0, selectedRange) }) else {
+            return baseAttributes
+        }
+
+        var attributes = baseAttributes
+        attributes[.backgroundColor] = NSColor.findHighlightColor
+        attributes[.foregroundColor] = NSColor.black
+        return attributes
+    }
+
+    static func attributes(
+        _ temporaryAttributes: [NSAttributedString.Key: Any],
+        drawingToScreen: Bool
+    ) -> [NSAttributedString.Key: Any]? {
+        guard drawingToScreen else { return nil }
+
+        var attributes = temporaryAttributes
+        let isMatch = attributes.removeValue(forKey: markerAttribute) != nil
+        guard isMatch else { return attributes }
+
+        attributes[.backgroundColor] = NSColor.findHighlightColor
+        attributes[.foregroundColor] = NSColor.black
+        return attributes
     }
 }
 

@@ -115,13 +115,14 @@ struct MarkdownParser {
         self.source = source
     }
 
-    func render() -> String {
+    func render(includingSourceMap: Bool = false) -> String {
         let normalized = source
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
         var parser = MarkdownBlockParser(
             lines: normalized.components(separatedBy: "\n"),
-            headingIDs: HeadingIDGenerator()
+            headingIDs: HeadingIDGenerator(),
+            sourceLineOffset: includingSourceMap ? 0 : nil
         )
         return parser.render()
     }
@@ -131,7 +132,18 @@ struct MarkdownParser {
 struct MarkdownBlockParser {
     let lines: [String]
     let headingIDs: HeadingIDGenerator
+    let sourceLineOffset: Int?
     private(set) var index = 0
+
+    init(
+        lines: [String],
+        headingIDs: HeadingIDGenerator,
+        sourceLineOffset: Int? = nil
+    ) {
+        self.lines = lines
+        self.headingIDs = headingIDs
+        self.sourceLineOffset = sourceLineOffset
+    }
 
     mutating func render() -> String {
         var blocks: [String] = []
@@ -141,27 +153,55 @@ struct MarkdownBlockParser {
                 continue
             }
 
+            let blockStart = index
+            let block: String
             if let fence = fenceOpening(lines[index]) {
-                blocks.append(renderFence(fence))
+                block = renderFence(fence)
             } else if let heading = atxHeading(lines[index]) {
                 index += 1
-                blocks.append(renderHeading(level: heading.level, source: heading.content))
+                block = renderHeading(level: heading.level, source: heading.content)
             } else if isThematicBreak(lines[index]) {
                 index += 1
-                blocks.append(#"<hr>"#)
+                block = #"<hr>"#
             } else if quoteContent(lines[index]) != nil {
-                blocks.append(renderBlockquote())
+                block = renderBlockquote()
             } else if tableDelimiter(at: index) != nil {
-                blocks.append(renderTable())
+                block = renderTable()
             } else if let marker = listMarker(lines[index]) {
-                blocks.append(renderList(startingWith: marker))
+                block = renderList(startingWith: marker)
             } else if indentation(of: lines[index]) >= 4 {
-                blocks.append(renderIndentedCode())
+                block = renderIndentedCode()
             } else {
-                blocks.append(renderParagraphOrSetextHeading())
+                block = renderParagraphOrSetextHeading()
+            }
+
+            if let sourceLineOffset {
+                blocks.append(
+                    Self.annotate(
+                        block,
+                        startLine: sourceLineOffset + blockStart,
+                        endLine: sourceLineOffset + max(blockStart, index - 1)
+                    )
+                )
+            } else {
+                blocks.append(block)
             }
         }
         return blocks.joined(separator: "\n")
+    }
+
+    private static func annotate(
+        _ html: String,
+        startLine: Int,
+        endLine: Int
+    ) -> String {
+        guard html.first == "<", let closingBracket = html.firstIndex(of: ">") else {
+            return html
+        }
+        var annotated = html
+        let attributes = " data-source-start=\"\(startLine)\" data-source-end=\"\(endLine)\""
+        annotated.insert(contentsOf: attributes, at: closingBracket)
+        return annotated
     }
 }
 

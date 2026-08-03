@@ -247,10 +247,36 @@ final class MarkdownParserRendererTests: XCTestCase {
         XCTAssertTrue(html.hasPrefix("<!doctype html>"))
         XCTAssertTrue(html.contains("script-src 'none'"))
         XCTAssertTrue(html.contains(#"<base href="file:///tmp/acmd%20preview/">"#))
-        XCTAssertTrue(html.contains(#"<main class="markdown-body" aria-label="Markdown preview">"#))
-        XCTAssertTrue(html.contains(#"<h1 id="preview">Preview</h1>"#))
+        XCTAssertTrue(html.contains(#"<main class="markdown-body" aria-label="Markdown preview" data-source-line-count="3">"#))
+        XCTAssertTrue(html.contains(#"<h1 id="preview" data-source-start="0" data-source-end="0">Preview</h1>"#))
+        XCTAssertTrue(html.contains(#"<p data-source-start="2" data-source-end="2">"#))
         XCTAssertTrue(html.contains(#"<a href="guide.md" rel="noopener noreferrer">Guide</a>"#))
         XCTAssertFalse(html.contains("<script"))
+    }
+
+    func testDocumentRendererUsesScopedYellowFindSelection() {
+        let html = MarkdownHTMLRenderer().renderDocument(markdown: "Find this text")
+
+        XCTAssertTrue(html.contains("--find-selection: #ffff00"))
+        XCTAssertTrue(html.contains("--find-selection-foreground: #000000"))
+        XCTAssertTrue(html.contains("html.acmd-find-active ::selection"))
+        XCTAssertTrue(html.contains("background: var(--find-selection)"))
+        XCTAssertTrue(html.contains("color: var(--find-selection-foreground)"))
+    }
+
+    func testSourceMapAnnotatesOnlyTopLevelBlocks() {
+        let markdown = "# One\n\n> ## Two"
+
+        XCTAssertEqual(
+            MarkdownParser(markdown).render(includingSourceMap: true),
+            """
+            <h1 id="one" data-source-start="0" data-source-end="0">One</h1>
+            <blockquote data-source-start="2" data-source-end="2">
+            <h2 id="two">Two</h2>
+            </blockquote>
+            """
+        )
+        XCTAssertFalse(render(markdown).contains("data-source-"))
     }
 
     func testDocumentRendererShowsAccessibleEmptyStateForWhitespace() {

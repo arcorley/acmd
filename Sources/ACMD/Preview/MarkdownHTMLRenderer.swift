@@ -7,6 +7,10 @@ struct MarkdownHTMLRenderer {
             #"<base href="\#(HTMLEscaping.attribute($0.absoluteString))">"#
         } ?? ""
 
+        let normalizedMarkdown = markdown
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        let sourceLineCount = normalizedMarkdown.components(separatedBy: "\n").count
         let content: String
         if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             content = """
@@ -17,7 +21,7 @@ struct MarkdownHTMLRenderer {
             </section>
             """
         } else {
-            content = MarkdownParser(markdown).render()
+            content = MarkdownParser(markdown).render(includingSourceMap: true)
         }
 
         return #"""
@@ -42,6 +46,8 @@ struct MarkdownHTMLRenderer {
               --link: #1769c2;
               --quote: #69717c;
               --selection: rgba(35, 116, 217, .22);
+              --find-selection: #ffff00;
+              --find-selection-foreground: #000000;
               --keyword: #9a1b7a;
               --string: #0b6e44;
               --comment: #747980;
@@ -94,6 +100,10 @@ struct MarkdownHTMLRenderer {
             }
 
             ::selection { background: var(--selection); }
+            html.acmd-find-active ::selection {
+              background: var(--find-selection);
+              color: var(--find-selection-foreground);
+            }
 
             .markdown-body {
               width: min(100%, 940px);
@@ -299,7 +309,7 @@ struct MarkdownHTMLRenderer {
           </style>
         </head>
         <body>
-          <main class="markdown-body" aria-label="Markdown preview">
+          <main class="markdown-body" aria-label="Markdown preview" data-source-line-count="\#(sourceLineCount)">
             \#(content)
           </main>
         </body>

@@ -5,6 +5,8 @@ struct DocumentView: View {
     let fileURL: URL?
 
     @StateObject private var editorController = MarkdownEditorController()
+    @StateObject private var findSession = MarkdownFindSession()
+    @StateObject private var scrollSynchronizer = MarkdownScrollSynchronizer()
     @SceneStorage("ACMD.editorLayoutMode") private var layoutModeValue = EditorLayoutMode.split.rawValue
 
     private var layoutMode: EditorLayoutMode {
@@ -16,7 +18,17 @@ struct DocumentView: View {
         Binding(
             get: { layoutMode },
             set: { newMode in
+                let previousMode = layoutMode
                 layoutMode = newMode
+                scrollSynchronizer.setEnabled(newMode == .split)
+                if newMode == .split {
+                    let sourcePane: MarkdownScrollSynchronizer.Pane = previousMode == .preview
+                        ? .preview
+                        : .editor
+                    DispatchQueue.main.async {
+                        scrollSynchronizer.synchronize(from: sourcePane)
+                    }
+                }
                 if newMode == .preview {
                     editorController.resignFocus()
                 } else {
@@ -62,6 +74,12 @@ struct DocumentView: View {
         }
         .focusedValue(\.editorLayoutMode, layoutBinding)
         .onAppear {
+            scrollSynchronizer.setEnabled(layoutMode == .split)
+            if layoutMode == .split {
+                DispatchQueue.main.async {
+                    scrollSynchronizer.synchronize(from: .editor)
+                }
+            }
             if layoutMode == .preview {
                 DispatchQueue.main.async {
                     editorController.resignFocus()
@@ -83,7 +101,12 @@ struct DocumentView: View {
                 .allowsHitTesting(showsEditor)
                 .accessibilityHidden(!showsEditor)
 
-            MarkdownPreviewView(markdown: document.text, documentURL: fileURL)
+            MarkdownPreviewView(
+                markdown: document.text,
+                documentURL: fileURL,
+                scrollSynchronizer: scrollSynchronizer,
+                findSession: findSession
+            )
                 .frame(
                     minWidth: showsPreview ? 300 : 0,
                     idealWidth: showsPreview ? 480 : 0,
@@ -100,7 +123,10 @@ struct DocumentView: View {
             MarkdownEditorView(
                 text: $document.text,
                 controller: editorController,
-                isActive: showsEditor
+                isActive: showsEditor,
+                showsVerticalScroller: true,
+                scrollSynchronizer: scrollSynchronizer,
+                findSession: findSession
             )
             if document.text.isEmpty {
                 Text("Start writing Markdown…")
