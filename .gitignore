@@ -3,5 +3,7 @@
 /dist/
 /.swiftpm/
 *.xcuserstate
+*.p8
+*.p12
 xcuserdata/
 DerivedData/

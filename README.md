@@ -20,10 +20,13 @@ Requirements: macOS 14 or newer and Xcode 15.3 or newer.
 make test
 make app
 make dmg
+make notarized-dmg
 open .build/ACMD.app
 ```
 
-`make dmg` creates a versioned, compressed disk image in `dist/` containing ACMD and an Applications-folder shortcut. Release builds are ad-hoc signed unless a Developer ID signing workflow is added.
+`make dmg` creates a versioned, compressed disk image in `dist/` containing ACMD and an Applications-folder shortcut. When a Developer ID Application identity is installed, release builds use it automatically with hardened runtime and a secure timestamp; otherwise they receive an ad-hoc signature.
+
+`make notarized-dmg` additionally submits the signed disk image through the `ACMD-notary` Keychain profile, waits for Apple to accept it, staples the ticket, and validates the result with Gatekeeper before atomically replacing the release artifact. Signing is pinned to team `AJ64G3AGXL`; override the team, identity, profile, or 30-minute notarization timeout with `ACMD_TEAM_ID`, `ACMD_SIGNING_IDENTITY`, `ACMD_NOTARY_PROFILE`, or `ACMD_NOTARY_TIMEOUT`. Never commit `.p8` or `.p12` credentials; both extensions are ignored by Git.
 
 For development, open `Package.swift` in Xcode or run `make run`.
 

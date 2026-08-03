@@ -5,6 +5,15 @@ set -euo pipefail
 script_dir=${0:A:h}
 project_dir=${script_dir:h}
 configuration=${1:-release}
+signing_identity=${ACMD_SIGNING_IDENTITY:-}
+team_id=${ACMD_TEAM_ID:-AJ64G3AGXL}
+
+if [[ -z "$signing_identity" ]]; then
+    signing_identity=$(security find-identity -v -p codesigning 2>/dev/null \
+        | grep -F "($team_id)" \
+        | sed -nE 's/.*"(Developer ID Application: [^"]+)".*/\1/p' \
+        | head -1 || true)
+fi
 
 cd "$project_dir"
 swift build --configuration "$configuration"
@@ -26,5 +35,18 @@ fi
 mv "$staging_path" "$bundle_path"
 trap - EXIT
 
-codesign --force --deep --sign - "$bundle_path"
+if [[ -n "$signing_identity" ]]; then
+    echo "Signing with $signing_identity"
+    codesign \
+        --force \
+        --options runtime \
+        --timestamp \
+        --sign "$signing_identity" \
+        "$bundle_path"
+else
+    echo "No Developer ID identity found; using an ad-hoc signature"
+    codesign --force --sign - "$bundle_path"
+fi
+
+codesign --verify --deep --strict --verbose=2 "$bundle_path"
 echo "$bundle_path"
