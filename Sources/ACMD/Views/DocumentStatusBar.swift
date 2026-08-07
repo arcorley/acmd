@@ -3,6 +3,7 @@ import SwiftUI
 
 struct DocumentStatusBar: View {
     let text: String
+    @ObservedObject var controller: MarkdownEditorController
     @State private var statistics = MarkdownStatistics(text: "")
 
     var body: some View {
@@ -11,6 +12,12 @@ struct DocumentStatusBar: View {
             Text("\(statistics.characterCount) characters")
             Text("\(statistics.lineCount) \(statistics.lineCount == 1 ? "line" : "lines")")
             Spacer()
+            if controller.selectedCharacterCount > 0 {
+                Text("\(controller.selectedCharacterCount) selected")
+                    .monospacedDigit()
+            }
+            Text("Ln \(controller.currentLine), Col \(controller.currentColumn)")
+                .monospacedDigit()
             if statistics.estimatedReadingMinutes > 0 {
                 Label("\(statistics.estimatedReadingMinutes) min read", systemImage: "clock")
             }
@@ -24,7 +31,7 @@ struct DocumentStatusBar: View {
         .background(.bar)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(
-            "Document statistics: \(statistics.wordCount) words, \(statistics.characterCount) characters, \(statistics.lineCount) lines"
+            accessibilitySummary
         )
         .task(id: text) {
             do {
@@ -39,5 +46,13 @@ struct DocumentStatusBar: View {
             guard !Task.isCancelled else { return }
             statistics = updated
         }
+    }
+
+    private var accessibilitySummary: String {
+        var summary = "Document statistics: \(statistics.wordCount) words, \(statistics.characterCount) characters, \(statistics.lineCount) lines. Line \(controller.currentLine), column \(controller.currentColumn)."
+        if controller.selectedCharacterCount > 0 {
+            summary += " \(controller.selectedCharacterCount) characters selected."
+        }
+        return summary
     }
 }

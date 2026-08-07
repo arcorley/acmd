@@ -119,10 +119,11 @@ struct MarkdownParser {
         let normalized = source
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
+        let lines = normalized.components(separatedBy: "\n")
         var parser = MarkdownBlockParser(
-            lines: normalized.components(separatedBy: "\n"),
+            lines: lines,
             headingIDs: HeadingIDGenerator(),
-            sourceLineOffset: includingSourceMap ? 0 : nil
+            sourceLineNumbers: includingSourceMap ? Array(lines.indices) : nil
         )
         return parser.render()
     }
@@ -132,17 +133,21 @@ struct MarkdownParser {
 struct MarkdownBlockParser {
     let lines: [String]
     let headingIDs: HeadingIDGenerator
-    let sourceLineOffset: Int?
+    let sourceLineNumbers: [Int]?
     private(set) var index = 0
 
     init(
         lines: [String],
         headingIDs: HeadingIDGenerator,
-        sourceLineOffset: Int? = nil
+        sourceLineNumbers: [Int]? = nil
     ) {
+        precondition(
+            sourceLineNumbers == nil || sourceLineNumbers?.count == lines.count,
+            "Source line numbers must align with parser lines"
+        )
         self.lines = lines
         self.headingIDs = headingIDs
-        self.sourceLineOffset = sourceLineOffset
+        self.sourceLineNumbers = sourceLineNumbers
     }
 
     mutating func render() -> String {
@@ -175,12 +180,12 @@ struct MarkdownBlockParser {
                 block = renderParagraphOrSetextHeading()
             }
 
-            if let sourceLineOffset {
+            if let sourceLineNumbers {
                 blocks.append(
                     Self.annotate(
                         block,
-                        startLine: sourceLineOffset + blockStart,
-                        endLine: sourceLineOffset + max(blockStart, index - 1)
+                        startLine: sourceLineNumbers[blockStart],
+                        endLine: sourceLineNumbers[max(blockStart, index - 1)]
                     )
                 )
             } else {
@@ -262,20 +267,31 @@ private extension MarkdownBlockParser {
 
     mutating func renderBlockquote() -> String {
         var quotedLines: [String] = []
+        var quotedSourceLineNumbers: [Int]? = sourceLineNumbers == nil ? nil : []
         while index < lines.count {
             if let content = quoteContent(lines[index]) {
                 quotedLines.append(content)
+                if let sourceLineNumber = sourceLineNumbers?[index] {
+                    quotedSourceLineNumbers?.append(sourceLineNumber)
+                }
                 index += 1
             } else if lines[index].isMarkdownBlank,
                       nextNonblankLine(after: index).map({ quoteContent(lines[$0]) != nil }) == true {
                 quotedLines.append("")
+                if let sourceLineNumber = sourceLineNumbers?[index] {
+                    quotedSourceLineNumbers?.append(sourceLineNumber)
+                }
                 index += 1
             } else {
                 break
             }
         }
 
-        var nested = MarkdownBlockParser(lines: quotedLines, headingIDs: headingIDs)
+        var nested = MarkdownBlockParser(
+            lines: quotedLines,
+            headingIDs: headingIDs,
+            sourceLineNumbers: quotedSourceLineNumbers
+        )
         return "<blockquote>\n\(nested.render())\n</blockquote>"
     }
 
@@ -329,8 +345,10 @@ private extension MarkdownBlockParser {
                 break
             }
 
+            let itemSourceStart = sourceLineNumbers?[index]
             index += 1
             var itemLines = [marker.content]
+            var itemSourceLineNumbers = itemSourceStart.map { [$0] }
 
             itemLoop: while index < lines.count {
                 if lines[index].isMarkdownBlank {
@@ -353,6 +371,9 @@ private extension MarkdownBlockParser {
 
                     if indentation(of: lines[lookahead]) > baseIndentation {
                         itemLines.append("")
+                        if let sourceLineNumber = sourceLineNumbers?[index] {
+                            itemSourceLineNumbers?.append(sourceLineNumber)
+                        }
                         index = lookahead
                         continue
                     }
@@ -372,6 +393,9 @@ private extension MarkdownBlockParser {
                         lines[index],
                         count: min(lineIndentation, marker.contentIndentation)
                     ))
+                    if let sourceLineNumber = sourceLineNumbers?[index] {
+                        itemSourceLineNumbers?.append(sourceLineNumber)
+                    }
                     index += 1
                     continue
                 }
@@ -383,6 +407,9 @@ private extension MarkdownBlockParser {
 
                 // CommonMark permits a non-indented lazy continuation of an item paragraph.
                 itemLines.append(lines[index])
+                if let sourceLineNumber = sourceLineNumbers?[index] {
+                    itemSourceLineNumbers?.append(sourceLineNumber)
+                }
                 index += 1
             }
 
@@ -391,7 +418,11 @@ private extension MarkdownBlockParser {
                 itemLines[0] = task!.content
             }
 
-            var nested = MarkdownBlockParser(lines: itemLines, headingIDs: headingIDs)
+            var nested = MarkdownBlockParser(
+                lines: itemLines,
+                headingIDs: headingIDs,
+                sourceLineNumbers: itemSourceLineNumbers
+            )
             let itemHTML = nested.render()
             let checkbox: String
             if let task {
@@ -402,7 +433,17 @@ private extension MarkdownBlockParser {
                 checkbox = ""
             }
             let itemClass = task == nil ? "" : #" class="task-list-item""#
-            renderedItems.append(("<li\(itemClass)>\(checkbox)\(itemHTML)</li>", task != nil))
+            let itemSourceAttributes: String
+            if let startLine = itemSourceLineNumbers?.first,
+               let endLine = itemSourceLineNumbers?.last {
+                itemSourceAttributes = #" data-source-start="\#(startLine)" data-source-end="\#(endLine)""#
+            } else {
+                itemSourceAttributes = ""
+            }
+            renderedItems.append((
+                "<li\(itemClass)\(itemSourceAttributes)>\(checkbox)\(itemHTML)</li>",
+                task != nil
+            ))
 
             if index < lines.count, let next = listMarker(lines[index]),
                next.indentation == baseIndentation, next.ordered != ordered {

@@ -180,6 +180,62 @@ final class MarkdownParserRendererTests: XCTestCase {
         )
     }
 
+    func testDeepMixedNestedListsPreserveHierarchy() {
+        let markdown = """
+        1. parent
+           - [ ] child task
+             1. grandchild
+                * great-grandchild
+        2. sibling
+        """
+
+        XCTAssertEqual(
+            render(markdown),
+            """
+            <ol>
+            <li><p>parent</p>
+            <ul class="contains-task-list">
+            <li class="task-list-item"><input type="checkbox" disabled aria-label="Task not completed"><p>child task</p>
+            <ol>
+            <li><p>grandchild</p>
+            <ul>
+            <li><p>great-grandchild</p></li>
+            </ul></li>
+            </ol></li>
+            </ul></li>
+            <li><p>sibling</p></li>
+            </ol>
+            """
+        )
+    }
+
+    func testNestedListsSupportThreeColumnDocumentIndentation() {
+        let markdown = """
+        ### Specialty
+           1. Mapping
+              1. Child
+                 1. Grandchild
+           2. Sibling
+        """
+
+        XCTAssertEqual(
+            render(markdown),
+            """
+            <h3 id="specialty">Specialty</h3>
+            <ol>
+            <li><p>Mapping</p>
+            <ol>
+            <li><p>Child</p>
+            <ol>
+            <li><p>Grandchild</p></li>
+            </ol></li>
+            </ol></li>
+            <li><p>Sibling</p></li>
+            </ol>
+            """
+        )
+    }
+
     func testTaskListRendersDisabledCheckboxesAndStateLabels() {
         let html = render("- [x] shipped\n- [ ] pending")
 
@@ -264,7 +320,7 @@ final class MarkdownParserRendererTests: XCTestCase {
         XCTAssertTrue(html.contains("color: var(--find-selection-foreground)"))
     }
 
-    func testSourceMapAnnotatesOnlyTopLevelBlocks() {
+    func testSourceMapPreservesOriginalLinesInsideBlockQuotes() {
         let markdown = "# One\n\n> ## Two"
 
         XCTAssertEqual(
@@ -272,11 +328,33 @@ final class MarkdownParserRendererTests: XCTestCase {
             """
             <h1 id="one" data-source-start="0" data-source-end="0">One</h1>
             <blockquote data-source-start="2" data-source-end="2">
-            <h2 id="two">Two</h2>
+            <h2 id="two" data-source-start="2" data-source-end="2">Two</h2>
             </blockquote>
             """
         )
         XCTAssertFalse(render(markdown).contains("data-source-"))
+    }
+
+    func testSourceMapAnnotatesEveryNestedListItemWithOriginalLines() {
+        let markdown = """
+        1. parent
+           - [ ] child task
+             1. grandchild
+                * great-grandchild
+        2. sibling
+        """
+
+        let html = MarkdownParser(markdown).render(includingSourceMap: true)
+
+        XCTAssertTrue(html.contains(#"<ol data-source-start="0" data-source-end="4">"#))
+        XCTAssertTrue(html.contains(#"<li data-source-start="0" data-source-end="3">"#))
+        XCTAssertTrue(html.contains(#"<ul class="contains-task-list" data-source-start="1" data-source-end="3">"#))
+        XCTAssertTrue(html.contains(#"<li class="task-list-item" data-source-start="1" data-source-end="3">"#))
+        XCTAssertTrue(html.contains(#"<ol data-source-start="2" data-source-end="3">"#))
+        XCTAssertTrue(html.contains(#"<li data-source-start="2" data-source-end="3">"#))
+        XCTAssertTrue(html.contains(#"<ul data-source-start="3" data-source-end="3">"#))
+        XCTAssertTrue(html.contains(#"<li data-source-start="3" data-source-end="3">"#))
+        XCTAssertTrue(html.contains(#"<li data-source-start="4" data-source-end="4">"#))
     }
 
     func testDocumentRendererShowsAccessibleEmptyStateForWhitespace() {

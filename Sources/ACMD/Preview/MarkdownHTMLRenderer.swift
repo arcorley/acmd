@@ -1,9 +1,21 @@
 import Foundation
 
+enum MarkdownHTMLRenderingMode: Sendable {
+    case preview
+    case output
+}
+
 /// Wraps parsed Markdown in a self-contained, script-free HTML document.
 struct MarkdownHTMLRenderer {
-    func renderDocument(markdown: String, documentURL: URL? = nil) -> String {
-        let baseElement = Self.baseURL(for: documentURL).map {
+    func renderDocument(
+        markdown: String,
+        documentURL: URL? = nil,
+        title: String? = nil,
+        includingSourceMap: Bool = true,
+        mode: MarkdownHTMLRenderingMode = .preview,
+        baseURLOverride: URL? = nil
+    ) -> String {
+        let baseElement = (baseURLOverride ?? Self.baseURL(for: documentURL)).map {
             #"<base href="\#(HTMLEscaping.attribute($0.absoluteString))">"#
         } ?? ""
 
@@ -11,8 +23,13 @@ struct MarkdownHTMLRenderer {
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
         let sourceLineCount = normalizedMarkdown.components(separatedBy: "\n").count
-        let content: String
-        if markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        let sourceLineCountAttribute = includingSourceMap
+            ? #" data-source-line-count="\#(sourceLineCount)""#
+            : ""
+        let titleElement = title.map { "<title>\(HTMLEscaping.text($0))</title>" } ?? ""
+        let isEmpty = markdown.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        var content: String
+        if isEmpty, mode == .preview {
             content = """
             <section class="empty-state" role="status" aria-label="Empty Markdown preview">
               <div class="empty-symbol" aria-hidden="true">M↓</div>
@@ -20,8 +37,26 @@ struct MarkdownHTMLRenderer {
               <p>Start writing Markdown and the rendered document will appear here.</p>
             </section>
             """
+        } else if isEmpty {
+            content = ""
         } else {
-            content = MarkdownParser(markdown).render(includingSourceMap: true)
+            content = MarkdownParser(markdown).render(includingSourceMap: includingSourceMap)
+        }
+        if mode == .output {
+            content = content
+                .replacingOccurrences(of: #"loading="lazy""#, with: #"loading="eager""#)
+                .replacingOccurrences(of: #"decoding="async""#, with: #"decoding="sync""#)
+        }
+
+        let bodyElement: String
+        if isEmpty, mode == .output {
+            bodyElement = ""
+        } else {
+            bodyElement = """
+              <main class="markdown-body" aria-label="Markdown preview"\(sourceLineCountAttribute)>
+                \(content)
+              </main>
+            """
         }
 
         return #"""
@@ -30,7 +65,8 @@ struct MarkdownHTMLRenderer {
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-          <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: http: file: data:; style-src 'unsafe-inline'; script-src 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'; media-src 'none'; form-action 'none'">
+          <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: http: file: data: acmd-local:; style-src 'unsafe-inline'; script-src 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'; media-src 'none'; form-action 'none'">
+          \#(titleElement)
           \#(baseElement)
           <style>
             :root {
@@ -301,17 +337,52 @@ struct MarkdownHTMLRenderer {
             }
 
             @media print {
-              :root { --background: white; --foreground: black; --muted: #555; }
+              @page { margin: .65in .7in .7in; }
+              :root {
+                color-scheme: light;
+                --background: #ffffff;
+                --foreground: #000000;
+                --muted: #555555;
+                --faint: #666666;
+                --border: #b8b8b8;
+                --soft-border: #d8d8d8;
+                --secondary-background: #f4f4f4;
+                --code-background: #f3f3f3;
+                --link: #000000;
+                --quote: #444444;
+                --keyword: #54134f;
+                --string: #145c35;
+                --comment: #555555;
+                --number: #713a00;
+                --shadow: transparent;
+              }
+              html, body {
+                min-width: 0;
+                min-height: 0;
+                background: #ffffff !important;
+                color: #000000 !important;
+                -webkit-print-color-adjust: exact;
+                print-color-adjust: exact;
+              }
               .markdown-body { width: 100%; max-width: none; padding: 0; }
               a { color: inherit; text-decoration: underline; }
-              pre, .table-scroll { break-inside: avoid; box-shadow: none; }
+              h1, h2, h3, h4, h5, h6 { break-after: avoid-page; }
+              p, blockquote, img, pre, table, .table-scroll { break-inside: avoid-page; }
+              pre {
+                overflow: visible;
+                white-space: pre-wrap;
+                overflow-wrap: anywhere;
+                box-shadow: none;
+              }
+              pre code { min-width: 0; white-space: pre-wrap; }
+              .table-scroll { overflow: visible; box-shadow: none; }
+              table { min-width: 0; }
+              thead { display: table-header-group; }
             }
           </style>
         </head>
         <body>
-          <main class="markdown-body" aria-label="Markdown preview" data-source-line-count="\#(sourceLineCount)">
-            \#(content)
-          </main>
+        \#(bodyElement)
         </body>
         </html>
         """#

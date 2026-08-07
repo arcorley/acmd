@@ -73,28 +73,41 @@ private struct MarkdownWebView: NSViewRepresentable {
         const lineCount = Number(
           document.querySelector('.markdown-body')?.dataset.sourceLineCount || 1
         );
-        if (elements.length === 0) {
-          return [{ line: 0, y: 0 }, { line: Math.max(0, lineCount - 1), y: maximum }];
-        }
-
+        const finalLine = Math.max(0, lineCount - 1);
         const absoluteTop = element => element.getBoundingClientRect().top + scrollingRoot.scrollTop;
-        const firstTop = absoluteTop(elements[0]);
-        const points = [{ line: 0, y: 0 }];
+        const firstTop = elements.length === 0 ? 0 : absoluteTop(elements[0]);
+        const candidates = [{ line: 0, y: 0 }, { line: finalLine, y: maximum }];
+
         for (const element of elements) {
-          const line = Number(element.dataset.sourceStart || 0);
-          const y = Math.min(maximum, Math.max(0, absoluteTop(element) - firstTop));
-          const previous = points[points.length - 1];
-          if (line > previous.line && y >= previous.y) {
-            points.push({ line, y });
+          const startLine = Number(element.dataset.sourceStart);
+          const endLine = Number(element.dataset.sourceEnd ?? element.dataset.sourceStart);
+          if (!Number.isFinite(startLine)) continue;
+
+          const rect = element.getBoundingClientRect();
+          const top = Math.min(maximum, Math.max(0, absoluteTop(element) - firstTop));
+          const bottom = Math.min(
+            maximum,
+            Math.max(top, rect.bottom + scrollingRoot.scrollTop - firstTop)
+          );
+          candidates.push({ line: startLine, y: top });
+          if (Number.isFinite(endLine) && endLine >= startLine) {
+            candidates.push({ line: endLine, y: bottom });
           }
         }
 
-        const finalLine = Math.max(0, lineCount - 1);
-        const last = points[points.length - 1];
-        if (finalLine > last.line) {
-          points.push({ line: finalLine, y: maximum });
-        } else if (maximum > last.y) {
-          last.y = maximum;
+        // Parent list rectangles contain their descendants, so DOM order is
+        // not geometric order. Sorting all start/end edges by rendered Y keeps
+        // precise nested-item anchors from being hidden by their container.
+        candidates.sort((left, right) => left.y - right.y || left.line - right.line);
+
+        const points = [];
+        for (const candidate of candidates) {
+          const line = Math.min(finalLine, Math.max(0, candidate.line));
+          const y = Math.min(maximum, Math.max(0, candidate.y));
+          const previous = points[points.length - 1];
+          if (previous && (line < previous.line || y < previous.y)) continue;
+          if (previous && line === previous.line && y === previous.y) continue;
+          points.push({ line, y });
         }
         return points;
       };

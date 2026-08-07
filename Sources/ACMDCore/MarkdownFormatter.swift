@@ -344,6 +344,17 @@ private extension MarkdownFormatter {
         var headingLevel: Int?
     }
 
+    struct ListLineContext {
+        var scope: ListScope
+        var insertionLocation: Int
+        var match: PrefixMatch?
+    }
+
+    struct ListScope: Hashable {
+        var quoteDepth: Int
+        var indentationColumns: Int
+    }
+
     static func toggleHeading(level: Int, in source: NSString, selection: NSRange) -> MarkdownEditResult {
         let lines = affectedLines(in: source, selection: selection)
         let matches = lines.map { headingPrefix(in: source, line: $0) }
@@ -370,14 +381,22 @@ private extension MarkdownFormatter {
 
     static func toggleList(_ style: ListStyle, in source: NSString, selection: NSRange) -> MarkdownEditResult {
         let lines = affectedLines(in: source, selection: selection)
-        let matches = lines.map { listPrefix(in: source, line: $0) }
-        let allMatch = matches.allSatisfy { $0?.style == style }
+        let contexts = lines.map { listLineContext(in: source, line: $0) }
+        let allMatch = contexts.allSatisfy { $0.match?.style == style }
+        var orderedCounters: [ListScope: Int] = [:]
+        var activeOrderedScopes: [ListScope] = []
         var edits: [TextEdit] = []
+        var firstLineContentStart: Int?
 
-        for (index, line) in lines.enumerated() {
-            let match = matches[index]
+        for index in lines.indices {
+            let context = contexts[index]
+            let match = context.match
             if allMatch, let match {
-                edits.append(TextEdit(range: match.range, replacement: ""))
+                let edit = TextEdit(range: match.range, replacement: "")
+                edits.append(edit)
+                if index == lines.startIndex {
+                    firstLineContentStart = edit.range.location
+                }
                 continue
             }
             guard !allMatch else { continue }
@@ -386,20 +405,51 @@ private extension MarkdownFormatter {
             case .unordered:
                 replacement = "- "
             case .ordered:
-                replacement = "\(index + 1). "
+                if let activeIndex = activeOrderedScopes.lastIndex(of: context.scope) {
+                    activeOrderedScopes.removeSubrange((activeIndex + 1)..<activeOrderedScopes.endIndex)
+                } else {
+                    while let active = activeOrderedScopes.last,
+                          !isStructuralAncestor(active, of: context.scope) {
+                        activeOrderedScopes.removeLast()
+                    }
+                    activeOrderedScopes.append(context.scope)
+                    orderedCounters[context.scope] = 0
+                }
+                let number = orderedCounters[context.scope, default: 0] + 1
+                orderedCounters[context.scope] = number
+                replacement = "\(number). "
             case .task:
                 replacement = "- [ ] "
             }
             if let match {
-                edits.append(TextEdit(range: match.range, replacement: replacement))
+                let edit = TextEdit(range: match.range, replacement: replacement)
+                edits.append(edit)
+                if index == lines.startIndex {
+                    firstLineContentStart = edit.range.location + (replacement as NSString).length
+                }
             } else {
-                edits.append(TextEdit(
-                    range: NSRange(location: line.location + indentationLength(in: source, line: line), length: 0),
+                let edit = TextEdit(
+                    range: NSRange(location: context.insertionLocation, length: 0),
                     replacement: replacement
-                ))
+                )
+                edits.append(edit)
+                if index == lines.startIndex {
+                    firstLineContentStart = edit.range.location + (replacement as NSString).length
+                }
             }
         }
-        return result(applying: edits, to: source, selection: selection)
+        var formatted = result(applying: edits, to: source, selection: selection)
+        if selection.length > 0,
+           selection.location == lines.first?.location,
+           let firstLineContentStart {
+            let selectionEnd = NSMaxRange(formatted.selection)
+            let contentStart = min(firstLineContentStart, selectionEnd)
+            formatted.selection = NSRange(
+                location: contentStart,
+                length: selectionEnd - contentStart
+            )
+        }
+        return formatted
     }
 
     static func toggleBlockQuote(in source: NSString, selection: NSRange) -> MarkdownEditResult {
@@ -828,11 +878,57 @@ private extension MarkdownFormatter {
         )
     }
 
-    static func listPrefix(in source: NSString, line: NSRange) -> PrefixMatch? {
-        let indentation = indentationLength(in: source, line: line)
-        var cursor = line.location + indentation
+    static func listLineContext(in source: NSString, line: NSRange) -> ListLineContext {
+        var cursor = line.location
         let end = NSMaxRange(line)
-        guard cursor < end else { return nil }
+        let initialWhitespaceStart = cursor
+
+        while cursor < end, isHorizontalWhitespace(source.character(at: cursor)) {
+            cursor += 1
+        }
+
+        var quoteDepth = 0
+        var indentationStart = initialWhitespaceStart
+        let leadingIndentation = indentationColumns(in: source.substring(with: NSRange(
+            location: initialWhitespaceStart,
+            length: cursor - initialWhitespaceStart
+        )))
+        if leadingIndentation <= 3,
+           cursor < end,
+           source.character(at: cursor) == unichar(62) {
+            indentationStart = cursor
+            while cursor < end, source.character(at: cursor) == unichar(62) {
+                quoteDepth += 1
+                cursor += 1
+                if cursor < end, isHorizontalWhitespace(source.character(at: cursor)) {
+                    cursor += 1
+                }
+                indentationStart = cursor
+                while cursor < end, isHorizontalWhitespace(source.character(at: cursor)) {
+                    cursor += 1
+                }
+                let nestedIndentation = indentationColumns(in: source.substring(with: NSRange(
+                    location: indentationStart,
+                    length: cursor - indentationStart
+                )))
+                if cursor >= end
+                    || source.character(at: cursor) != unichar(62)
+                    || nestedIndentation > 3 {
+                    break
+                }
+            }
+        }
+
+        let indentationRange = NSRange(location: indentationStart, length: cursor - indentationStart)
+        let context = ListLineContext(
+            scope: ListScope(
+                quoteDepth: quoteDepth,
+                indentationColumns: indentationColumns(in: source.substring(with: indentationRange))
+            ),
+            insertionLocation: cursor,
+            match: nil
+        )
+        guard cursor < end else { return context }
         let markerStart = cursor
         let first = source.character(at: cursor)
 
@@ -840,7 +936,7 @@ private extension MarkdownFormatter {
             cursor += 1
             let whitespaceStart = cursor
             while cursor < end, isHorizontalWhitespace(source.character(at: cursor)) { cursor += 1 }
-            guard cursor > whitespaceStart else { return nil }
+            guard cursor > whitespaceStart || cursor == end else { return context }
             if cursor + 2 < end,
                source.character(at: cursor) == unichar(91),
                (source.character(at: cursor + 1) == unichar(32)
@@ -848,22 +944,30 @@ private extension MarkdownFormatter {
                    || source.character(at: cursor + 1) == unichar(88)),
                source.character(at: cursor + 2) == unichar(93) {
                 cursor += 3
-                guard cursor == end || isHorizontalWhitespace(source.character(at: cursor)) else { return nil }
+                guard cursor == end || isHorizontalWhitespace(source.character(at: cursor)) else { return context }
                 while cursor < end, isHorizontalWhitespace(source.character(at: cursor)) { cursor += 1 }
-                return PrefixMatch(
-                    range: NSRange(location: markerStart, length: cursor - markerStart),
-                    style: .task,
-                    headingLevel: nil
+                return ListLineContext(
+                    scope: context.scope,
+                    insertionLocation: context.insertionLocation,
+                    match: PrefixMatch(
+                        range: NSRange(location: markerStart, length: cursor - markerStart),
+                        style: .task,
+                        headingLevel: nil
+                    )
                 )
             }
-            return PrefixMatch(
-                range: NSRange(location: markerStart, length: cursor - markerStart),
-                style: .unordered,
-                headingLevel: nil
+            return ListLineContext(
+                scope: context.scope,
+                insertionLocation: context.insertionLocation,
+                match: PrefixMatch(
+                    range: NSRange(location: markerStart, length: cursor - markerStart),
+                    style: .unordered,
+                    headingLevel: nil
+                )
             )
         }
 
-        guard first >= unichar(48), first <= unichar(57) else { return nil }
+        guard first >= unichar(48), first <= unichar(57) else { return context }
         while cursor < end {
             let character = source.character(at: cursor)
             guard character >= unichar(48), character <= unichar(57) else { break }
@@ -871,17 +975,40 @@ private extension MarkdownFormatter {
         }
         guard cursor < end,
               source.character(at: cursor) == unichar(46) || source.character(at: cursor) == unichar(41) else {
-            return nil
+            return context
         }
         cursor += 1
         let whitespaceStart = cursor
         while cursor < end, isHorizontalWhitespace(source.character(at: cursor)) { cursor += 1 }
-        guard cursor > whitespaceStart || cursor == end else { return nil }
-        return PrefixMatch(
-            range: NSRange(location: markerStart, length: cursor - markerStart),
-            style: .ordered,
-            headingLevel: nil
+        guard cursor > whitespaceStart || cursor == end else { return context }
+        return ListLineContext(
+            scope: context.scope,
+            insertionLocation: context.insertionLocation,
+            match: PrefixMatch(
+                range: NSRange(location: markerStart, length: cursor - markerStart),
+                style: .ordered,
+                headingLevel: nil
+            )
         )
+    }
+
+    static func isStructuralAncestor(_ ancestor: ListScope, of descendant: ListScope) -> Bool {
+        if ancestor.quoteDepth == descendant.quoteDepth {
+            return ancestor.indentationColumns < descendant.indentationColumns
+        }
+        return ancestor.quoteDepth > 0 && ancestor.quoteDepth < descendant.quoteDepth
+    }
+
+    static func indentationColumns(in indentation: String) -> Int {
+        var columns = 0
+        for character in indentation.utf16 {
+            if character == unichar(9) {
+                columns += 4 - (columns % 4)
+            } else {
+                columns += 1
+            }
+        }
+        return columns
     }
 
     static func blockQuotePrefix(in source: NSString, line: NSRange) -> NSRange? {

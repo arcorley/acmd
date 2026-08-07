@@ -250,17 +250,28 @@ private extension MarkdownSyntaxTokenizer {
 
     static func lineSpans(in source: NSString, lines: [Line], excluding masks: [NSRange]) -> [MarkdownSyntaxSpan] {
         var result: [MarkdownSyntaxSpan] = []
-        for line in lines where !intersects(line.content, any: masks) {
+        var listIndentationByQuoteDepth: [Int: Int] = [:]
+
+        for line in lines {
+            if intersects(line.content, any: masks) {
+                listIndentationByQuoteDepth.removeAll()
+                continue
+            }
+
             let end = NSMaxRange(line.content)
             var cursor = line.content.location
             cursor += upToThreeSpaces(from: cursor, end: end, in: source)
 
             var quoteStart: Int?
             var quoteEnd: Int?
+            var quoteDepth = 0
+            var contentIndentationStart = line.content.location
             while cursor < end, source.character(at: cursor) == unichar(62) {
                 quoteStart = quoteStart ?? cursor
+                quoteDepth += 1
                 cursor += 1
                 if cursor < end, isHorizontalWhitespace(source.character(at: cursor)) { cursor += 1 }
+                contentIndentationStart = cursor
                 quoteEnd = cursor
                 cursor += upToThreeSpaces(from: cursor, end: end, in: source)
             }
@@ -271,11 +282,29 @@ private extension MarkdownSyntaxTokenizer {
                 ))
             }
 
+            var listCursor = contentIndentationStart
+            while listCursor < end, isHorizontalWhitespace(source.character(at: listCursor)) {
+                listCursor += 1
+            }
+            let listIndentation = indentationColumns(
+                from: contentIndentationStart,
+                to: listCursor,
+                in: source
+            )
+            let isBlank = listCursor == end
+
+            if !isBlank {
+                listIndentationByQuoteDepth = listIndentationByQuoteDepth.filter { depth, _ in
+                    depth == quoteDepth
+                }
+            }
+
             if isHorizontalRule(from: cursor, to: end, in: source) {
                 result.append(MarkdownSyntaxSpan(
                     range: NSRange(location: cursor, length: end - cursor),
                     kind: .horizontalRule
                 ))
+                listIndentationByQuoteDepth[quoteDepth] = nil
                 continue
             }
 
@@ -283,11 +312,24 @@ private extension MarkdownSyntaxTokenizer {
                 result.append(MarkdownSyntaxSpan(range: heading, kind: .heading))
             }
 
-            if let marker = listMarker(from: cursor, to: end, in: source) {
+            let activeListIndentation = listIndentationByQuoteDepth[quoteDepth]
+            // Four or more columns start an indented code block unless this line
+            // is nested beneath a list in the same blockquote container.
+            if let marker = listMarker(from: listCursor, to: end, in: source),
+               listIndentation <= 3
+                   || activeListIndentation.map({ listIndentation > $0 }) == true {
                 result.append(MarkdownSyntaxSpan(
                     range: marker.range,
                     kind: marker.isTask ? .taskMarker : .listMarker
                 ))
+                listIndentationByQuoteDepth[quoteDepth] = min(
+                    activeListIndentation ?? listIndentation,
+                    listIndentation
+                )
+            } else if !isBlank,
+                      let activeListIndentation,
+                      listIndentation <= activeListIndentation {
+                listIndentationByQuoteDepth[quoteDepth] = nil
             }
         }
         return result
@@ -457,6 +499,20 @@ private extension MarkdownSyntaxTokenizer {
         var cursor = start
         while cursor < end, cursor - start < 3, source.character(at: cursor) == unichar(32) { cursor += 1 }
         return cursor - start
+    }
+
+    static func indentationColumns(from start: Int, to end: Int, in source: NSString) -> Int {
+        var columns = 0
+        var cursor = start
+        while cursor < end {
+            if source.character(at: cursor) == unichar(9) {
+                columns += 4 - (columns % 4)
+            } else {
+                columns += 1
+            }
+            cursor += 1
+        }
+        return columns
     }
 
     static func isHorizontalWhitespace(_ character: unichar) -> Bool {

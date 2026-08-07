@@ -192,6 +192,117 @@ final class MarkdownFormatterTests: XCTestCase {
         XCTAssertEqual(toggled.text, "alpha\nbeta\ngamma")
     }
 
+    func testOrderedListNumbersEachNestedIndentationScopeIndependently() {
+        let text = "alpha\n    beta\n    gamma\ndelta"
+
+        let result = MarkdownFormatter.apply(
+            command: .orderedList,
+            to: text,
+            selection: NSRange(location: 0, length: (text as NSString).length)
+        )
+
+        XCTAssertEqual(result.text, "1. alpha\n    1. beta\n    2. gamma\n2. delta")
+    }
+
+    func testOrderedListSwitchesNestedMarkersWithoutFlatteningTheirSequences() {
+        let text = "- alpha\n    - beta\n    - gamma\n- delta"
+
+        let result = MarkdownFormatter.apply(
+            command: .orderedList,
+            to: text,
+            selection: NSRange(location: 0, length: (text as NSString).length)
+        )
+
+        XCTAssertEqual(result.text, "1. alpha\n    1. beta\n    2. gamma\n2. delta")
+    }
+
+    func testOrderedNestedSequenceRestartsUnderEachParent() {
+        let text = "first\n    child\nsecond\n    child"
+
+        let result = MarkdownFormatter.apply(
+            command: .orderedList,
+            to: text,
+            selection: NSRange(location: 0, length: (text as NSString).length)
+        )
+
+        XCTAssertEqual(result.text, "1. first\n    1. child\n2. second\n    1. child")
+    }
+
+    func testOrderedListPreservesBlockQuotePrefixesAndScopes() {
+        let text = "> alpha\n>   beta\n>   gamma\n> delta\n>> deep\n>> deeper\n> final"
+
+        let result = MarkdownFormatter.apply(
+            command: .orderedList,
+            to: text,
+            selection: NSRange(location: 0, length: (text as NSString).length)
+        )
+
+        XCTAssertEqual(
+            result.text,
+            "> 1. alpha\n>   1. beta\n>   2. gamma\n> 2. delta\n>> 1. deep\n>> 2. deeper\n> 3. final"
+        )
+    }
+
+    func testQuotedOrderedListToggleRemovesOnlyListMarkers() {
+        let text = "> 1. alpha\n>   1. beta\n>   2. gamma\n> 2. delta"
+
+        let result = MarkdownFormatter.apply(
+            command: .orderedList,
+            to: text,
+            selection: NSRange(location: 0, length: (text as NSString).length)
+        )
+
+        XCTAssertEqual(result.text, "> alpha\n>   beta\n>   gamma\n> delta")
+    }
+
+    func testFourSpaceIndentedQuoteSyntaxRemainsLiteralListContent() {
+        let text = "    > literal"
+        let selection = NSRange(location: 0, length: (text as NSString).length)
+
+        let result = MarkdownFormatter.apply(
+            command: .orderedList,
+            to: text,
+            selection: selection
+        )
+
+        XCTAssertEqual(result.text, "    1. > literal")
+        XCTAssertEqual(selectedText(in: result), "> literal")
+    }
+
+    func testFourColumnsBeforeNestedQuoteRemainLiteralContent() {
+        let text = ">     > literal"
+        let selection = NSRange(location: 0, length: (text as NSString).length)
+
+        let result = MarkdownFormatter.apply(
+            command: .orderedList,
+            to: text,
+            selection: selection
+        )
+
+        XCTAssertEqual(result.text, ">     1. > literal")
+        XCTAssertEqual(selectedText(in: result), "> literal")
+    }
+
+    func testWholeLineListSelectionKeepsOnlyOriginalContentSelected() {
+        let cases = [
+            (source: "alpha", formatted: "1. alpha", selected: "alpha"),
+            (source: "    alpha", formatted: "    1. alpha", selected: "alpha"),
+            (source: "> alpha", formatted: "> 1. alpha", selected: "alpha"),
+            (source: ">   alpha", formatted: ">   1. alpha", selected: "alpha")
+        ]
+
+        for testCase in cases {
+            let result = MarkdownFormatter.apply(
+                command: .orderedList,
+                to: testCase.source,
+                selection: NSRange(location: 0, length: (testCase.source as NSString).length)
+            )
+
+            XCTAssertEqual(result.text, testCase.formatted, "source: \(testCase.source)")
+            XCTAssertEqual(selectedText(in: result), testCase.selected, "source: \(testCase.source)")
+        }
+    }
+
     func testTaskListPreservesIndentation() {
         let result = MarkdownFormatter.apply(
             command: .taskList,
@@ -200,6 +311,29 @@ final class MarkdownFormatterTests: XCTestCase {
         )
 
         XCTAssertEqual(result.text, "  - [ ] first\n\t- [ ] second")
+    }
+
+    func testBareEmptyBulletIsToggledOrReplacedWithoutDuplication() {
+        let toggled = MarkdownFormatter.apply(
+            command: .unorderedList,
+            to: "-",
+            selection: NSRange(location: 0, length: 1)
+        )
+        XCTAssertEqual(toggled.text, "")
+
+        let ordered = MarkdownFormatter.apply(
+            command: .orderedList,
+            to: "+",
+            selection: NSRange(location: 0, length: 1)
+        )
+        XCTAssertEqual(ordered.text, "1. ")
+
+        let task = MarkdownFormatter.apply(
+            command: .taskList,
+            to: "*",
+            selection: NSRange(location: 0, length: 1)
+        )
+        XCTAssertEqual(task.text, "- [ ] ")
     }
 
     func testMixedBlockQuotesAreNormalizedThenToggled() {

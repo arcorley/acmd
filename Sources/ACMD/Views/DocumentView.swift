@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct DocumentView: View {
@@ -5,6 +6,7 @@ struct DocumentView: View {
     let fileURL: URL?
 
     @StateObject private var editorController = MarkdownEditorController()
+    @StateObject private var exportController = MarkdownExportController()
     @StateObject private var findSession = MarkdownFindSession()
     @StateObject private var scrollSynchronizer = MarkdownScrollSynchronizer()
     @SceneStorage("ACMD.editorLayoutMode") private var layoutModeValue = EditorLayoutMode.split.rawValue
@@ -47,7 +49,7 @@ struct DocumentView: View {
         VStack(spacing: 0) {
             content
             Divider()
-            DocumentStatusBar(text: document.text)
+            DocumentStatusBar(text: document.text, controller: editorController)
         }
         .frame(minWidth: 720, minHeight: 460)
         .toolbarRole(.editor)
@@ -73,6 +75,8 @@ struct DocumentView: View {
             }
         }
         .focusedValue(\.editorLayoutMode, layoutBinding)
+        .focusedValue(\.documentFileActions, documentFileActionContext)
+        .focusedValue(\.editorViewActions, editorViewActionContext)
         .onAppear {
             scrollSynchronizer.setEnabled(layoutMode == .split)
             if layoutMode == .split {
@@ -86,6 +90,68 @@ struct DocumentView: View {
                 }
             }
         }
+    }
+
+    private var documentFileActionContext: DocumentFileActions {
+        DocumentFileActions(
+            isExporting: exportController.isPreparingOutput,
+            exportHTML: {
+                exportController.exportHTML(
+                    markdown: document.text,
+                    sourceURL: fileURL
+                )
+            },
+            exportPDF: {
+                exportController.exportPDF(
+                    markdown: document.text,
+                    sourceURL: fileURL
+                )
+            },
+            printRenderedDocument: {
+                exportController.printDocument(
+                    markdown: document.text,
+                    sourceURL: fileURL
+                )
+            },
+            revealInFinder: fileURL.map { url in
+                {
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+            }
+        )
+    }
+
+    private var editorViewActionContext: EditorViewActions {
+        EditorViewActions(
+            fontSize: editorController.fontSize,
+            canZoomIn: editorController.canZoomIn,
+            canZoomOut: editorController.canZoomOut,
+            isDefaultZoom: editorController.isDefaultZoom,
+            wrapsLines: editorController.isWordWrapEnabled,
+            showsLineNumbers: editorController.showsLineNumbers,
+            currentLine: editorController.currentLine,
+            totalLineCount: editorController.totalLineCount,
+            zoomIn: editorController.zoomIn,
+            zoomOut: editorController.zoomOut,
+            resetZoom: editorController.resetZoom,
+            toggleLineWrapping: editorController.toggleWordWrap,
+            toggleLineNumbers: editorController.toggleLineNumbers,
+            goToLine: { line in
+                if layoutMode == .preview {
+                    layoutBinding.wrappedValue = .editor
+                }
+                DispatchQueue.main.async {
+                    editorController.goToLine(line)
+                }
+            },
+            focusEditor: {
+                if layoutMode == .preview {
+                    layoutBinding.wrappedValue = .editor
+                } else {
+                    editorController.focus()
+                }
+            }
+        )
     }
 
     @ViewBuilder
@@ -132,7 +198,7 @@ struct DocumentView: View {
                 Text("Start writing Markdown…")
                     .font(.system(.body, design: .monospaced))
                     .foregroundStyle(.tertiary)
-                    .padding(.leading, 29)
+                    .padding(.leading, editorController.showsLineNumbers ? 57 : 29)
                     .padding(.top, 27)
                     .allowsHitTesting(false)
                     .accessibilityHidden(true)

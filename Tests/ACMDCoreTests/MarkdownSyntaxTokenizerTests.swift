@@ -97,6 +97,70 @@ final class MarkdownSyntaxTokenizerTests: XCTestCase {
         assertContains(spans, kind: .taskMarker, text: "- [ ] ", in: text)
     }
 
+    func testRecognizesListMarkersAtMultipleNestingLevels() {
+        let text = """
+        - parent
+          - child
+            1. grandchild
+                + great-grandchild
+        """
+        let spans = MarkdownSyntaxTokenizer.spans(in: text)
+
+        XCTAssertEqual(
+            spans.filter { $0.kind == .listMarker }.map { substring($0, in: text) },
+            ["- ", "- ", "1. ", "+ "]
+        )
+    }
+
+    func testRecognizesMixedNestedListAndTaskMarkers() {
+        let text = """
+        1. ordered
+           * bullet
+               - [ ] open task
+                   + [X] completed task
+        """
+        let spans = MarkdownSyntaxTokenizer.spans(in: text)
+
+        XCTAssertEqual(
+            spans.filter { $0.kind == .listMarker }.map { substring($0, in: text) },
+            ["1. ", "* "]
+        )
+        XCTAssertEqual(
+            spans.filter { $0.kind == .taskMarker }.map { substring($0, in: text) },
+            ["- [ ] ", "+ [X] "]
+        )
+    }
+
+    func testRecognizesNestedListsInsideBlockQuotes() {
+        let text = """
+        > - quoted
+        >     1) nested ordered
+        >         - [x] deeply nested task
+        """
+        let spans = MarkdownSyntaxTokenizer.spans(in: text)
+
+        XCTAssertEqual(spans.filter { $0.kind == .blockQuote }.count, 3)
+        XCTAssertEqual(
+            spans.filter { $0.kind == .listMarker }.map { substring($0, in: text) },
+            ["- ", "1) "]
+        )
+        XCTAssertEqual(
+            spans.filter { $0.kind == .taskMarker }.map { substring($0, in: text) },
+            ["- [x] "]
+        )
+    }
+
+    func testStandaloneIndentedCodeIsNotRecognizedAsAList() {
+        let text = """
+            - not a list
+            1. still code
+            - [ ] also code
+        """
+        let spans = MarkdownSyntaxTokenizer.spans(in: text)
+
+        XCTAssertTrue(spans.filter { $0.kind == .listMarker || $0.kind == .taskMarker }.isEmpty)
+    }
+
     func testEmptyTextHasNoSpans() {
         XCTAssertEqual(MarkdownSyntaxTokenizer.spans(in: ""), [])
     }
