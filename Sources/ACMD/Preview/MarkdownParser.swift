@@ -258,6 +258,9 @@ private extension MarkdownBlockParser {
 
         let code = codeLines.joined(separator: "\n")
         let language = fence.info.split(whereSeparator: \.isWhitespace).first.map(String.init)
+        if language?.lowercased() == "mermaid" {
+            return #"<div class="mermaid-diagram" role="group" aria-label="Mermaid diagram"><pre class="mermaid-source"><code>\#(HTMLEscaping.text(code))</code></pre></div>"#
+        }
         let languageClass = language.flatMap(sanitizedLanguageClass)
         let highlighted = CodeSyntaxHighlighter().highlight(code, language: language)
         let classAttribute = languageClass.map { #" class="language-\#(HTMLEscaping.attribute($0))""# } ?? ""

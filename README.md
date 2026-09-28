@@ -1,6 +1,6 @@
 # ACMD
 
-ACMD is a native macOS Markdown editor and renderer built with SwiftUI, AppKit, and WebKit. Its Markdown formatter, syntax tokenizer, parser, and HTML renderer are implemented in this repository; it has no third-party dependencies.
+ACMD is a native macOS Markdown editor and renderer built with SwiftUI, AppKit, and WebKit. Its Markdown formatter, syntax tokenizer, parser, and HTML renderer are implemented in this repository. Mermaid is bundled for offline diagram rendering; no external runtime or package installation is required.
 
 ## Download
 
@@ -14,6 +14,7 @@ ACMD is a native macOS Markdown editor and renderer built with SwiftUI, AppKit, 
 - Selection-aware Bold, Italic, Strikethrough, Inline Code, Link, Image, Heading, List, Quote, Code Block, and Horizontal Rule commands
 - Editor, split, and rendered-preview layouts with native find in either pane
 - Rendered headings, inline styles, links, images, block quotes, lists, task lists, fenced code, tables, and horizontal rules
+- Offline [Mermaid diagrams](Docs/Mermaid.md) in the preview, HTML/PDF exports, and print output, with theme-aware rendering and readable syntax errors
 - Dynamic light/dark appearance, selectable preview text, relative image/link resolution, and native accessibility labels
 - Word, character, line, selection, cursor-position, and estimated reading-time statistics
 

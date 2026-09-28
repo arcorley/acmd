@@ -172,7 +172,8 @@ struct MarkdownExportContent: Equatable, Sendable {
             title: suggestedBaseName,
             includingSourceMap: false,
             mode: renderingMode,
-            baseURLOverride: baseURLOverride
+            baseURLOverride: baseURLOverride,
+            includingMermaidRuntime: target == .htmlExport
         )
         return Self.preparingImagesForOutput(in: html)
     }
@@ -338,6 +339,7 @@ enum MarkdownPrintReadiness {
     /// Broken images resolve through `error`, and decode failures are ignored,
     /// so one bad image does not prevent the rest of the document from printing.
     static let waitForImagesScript = #"""
+    await window.__acmdMermaidReady;
     const images = Array.from(document.images);
     await Promise.all(images.map(async image => {
       image.loading = 'eager';
@@ -559,6 +561,7 @@ private final class MarkdownPrintRenderSession: NSObject, WKNavigationDelegate {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        MermaidRendering.install(in: configuration, forPrint: true)
         if let rootDirectoryURL = content.localImageRootURL {
             let handler = MarkdownLocalImageSchemeHandler(rootDirectoryURL: rootDirectoryURL)
             configuration.setURLSchemeHandler(

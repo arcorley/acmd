@@ -27,6 +27,7 @@ mkdir -p "$staging_path/Contents/MacOS" "$staging_path/Contents/Resources"
 ditto "$binary_dir/ACMD" "$staging_path/Contents/MacOS/ACMD"
 ditto "$project_dir/Scripts/ACMD-Info.plist" "$staging_path/Contents/Info.plist"
 ditto "$project_dir/Resources/AppIcon.icns" "$staging_path/Contents/Resources/AppIcon.icns"
+ditto "$binary_dir/ACMD_ACMD.bundle" "$staging_path/Contents/Resources/ACMD_ACMD.bundle"
 chmod 755 "$staging_path/Contents/MacOS/ACMD"
 
 if [[ -d "$bundle_path" ]]; then

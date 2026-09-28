@@ -122,6 +122,40 @@ final class MarkdownParserRendererTests: XCTestCase {
         XCTAssertFalse(html.contains(" onmouseover="))
     }
 
+    func testMermaidFencesKeepEscapedSourceAndSourceMapOnDiagramContainer() {
+        let markdown = "~~~MeRmAiD\nflowchart LR\nA[\"<script>alert(1)</script> & text\"] --> B\n~~~"
+        let html = MarkdownParser(markdown).render(includingSourceMap: true)
+
+        XCTAssertTrue(html.contains(#"<div class="mermaid-diagram" role="group" aria-label="Mermaid diagram" data-source-start="0" data-source-end="3">"#))
+        XCTAssertTrue(html.contains(#"<pre class="mermaid-source"><code>flowchart LR"#))
+        XCTAssertTrue(html.contains("&lt;script&gt;alert(1)&lt;/script&gt; &amp; text"))
+        XCTAssertFalse(html.contains("<script>"))
+        XCTAssertFalse(html.contains("tok-"))
+    }
+
+    func testNestedMermaidAndOrdinaryFencesRemainDistinct() {
+        let html = render("""
+        > ```mermaid
+        > flowchart TD
+        > A --> B
+        > ```
+
+        ```text
+        flowchart TD
+        A --> B
+        ```
+
+        ```mermaid-example
+        A --> B
+        ```
+        """)
+
+        XCTAssertEqual(html.components(separatedBy: #"class="mermaid-diagram""#).count - 1, 1)
+        XCTAssertTrue(html.contains("<blockquote>\n<div"))
+        XCTAssertTrue(html.contains(#"class="language-text""#))
+        XCTAssertTrue(html.contains(#"class="language-mermaid-example""#))
+    }
+
     func testBlockquotesCanContainBlocksAndNestedQuotes() {
         let markdown = """
         > # Quoted

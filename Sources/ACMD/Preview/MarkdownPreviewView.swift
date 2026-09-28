@@ -173,6 +173,7 @@ private struct MarkdownWebView: NSViewRepresentable {
         let configuration = WKWebViewConfiguration()
         configuration.websiteDataStore = .nonPersistent()
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        MermaidRendering.install(in: configuration)
         configuration.userContentController.add(
             context.coordinator,
             name: Self.scrollMessageName
@@ -317,8 +318,14 @@ private struct MarkdownWebView: NSViewRepresentable {
             let pendingProgress = pendingScrollProgress
             pendingScrollProgress = nil
 
-            DispatchQueue.main.async { [weak self, weak container, weak webView] in
-                guard let self else { return }
+            let loadedSnapshot = lastSnapshot
+            webView.callAsyncJavaScript(
+                MermaidRendering.waitUntilReadyScript,
+                arguments: [:],
+                in: nil,
+                in: .defaultClient
+            ) { [weak self, weak container, weak webView] _ in
+                guard let self, self.lastSnapshot == loadedSnapshot else { return }
                 self.scrollSynchronizer?.endSuspending(.preview)
                 if self.scrollSynchronizer?.isEnabled == true {
                     self.scrollSynchronizer?.synchronize(from: .editor)

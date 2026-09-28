@@ -20,7 +20,8 @@ let package = Package(
             dependencies: [
                 "ACMDCore"
             ],
-            path: "Sources/ACMD"
+            path: "Sources/ACMD",
+            resources: [.copy("Resources/Mermaid")]
         ),
         .testTarget(
             name: "ACMDCoreTests",

@@ -5,7 +5,8 @@ enum MarkdownHTMLRenderingMode: Sendable {
     case output
 }
 
-/// Wraps parsed Markdown in a self-contained, script-free HTML document.
+/// Wraps parsed Markdown in a self-contained HTML document. App WebViews use
+/// isolated scripts; standalone exports can include the trusted Mermaid runtime.
 struct MarkdownHTMLRenderer {
     func renderDocument(
         markdown: String,
@@ -13,7 +14,8 @@ struct MarkdownHTMLRenderer {
         title: String? = nil,
         includingSourceMap: Bool = true,
         mode: MarkdownHTMLRenderingMode = .preview,
-        baseURLOverride: URL? = nil
+        baseURLOverride: URL? = nil,
+        includingMermaidRuntime: Bool = false
     ) -> String {
         let baseElement = (baseURLOverride ?? Self.baseURL(for: documentURL)).map {
             #"<base href="\#(HTMLEscaping.attribute($0.absoluteString))">"#
@@ -59,13 +61,18 @@ struct MarkdownHTMLRenderer {
             """
         }
 
+        let includesMermaid = includingMermaidRuntime && content.contains(#"<div class="mermaid-diagram""#)
+        let scriptNonce = UUID().uuidString
+        let scriptPolicy = includesMermaid ? "'nonce-\(scriptNonce)'" : "'none'"
+        let scripts = includesMermaid ? MermaidRendering.standaloneScripts(nonce: scriptNonce) : ""
+
         return #"""
         <!doctype html>
         <html lang="en">
         <head>
           <meta charset="utf-8">
           <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-          <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: http: file: data: acmd-local:; style-src 'unsafe-inline'; script-src 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'; media-src 'none'; form-action 'none'">
+          <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src https: http: file: data: acmd-local:; style-src 'unsafe-inline'; script-src \#(scriptPolicy); connect-src 'none'; object-src 'none'; frame-src 'none'; media-src 'none'; form-action 'none'">
           \#(titleElement)
           \#(baseElement)
           <style>
@@ -208,6 +215,10 @@ struct MarkdownHTMLRenderer {
             }
 
             pre code { display: block; min-width: max-content; white-space: pre; }
+            .mermaid-diagram { margin: 0 0 1.2em; }
+            .mermaid-rendered { overflow-x: auto; text-align: center; }
+            .mermaid-rendered svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+            .mermaid-error { color: var(--muted); font-size: .9em; white-space: pre-wrap; }
             .tok-keyword { color: var(--keyword); font-weight: 600; }
             .tok-string { color: var(--string); }
             .tok-comment { color: var(--comment); font-style: italic; }
@@ -367,7 +378,7 @@ struct MarkdownHTMLRenderer {
               .markdown-body { width: 100%; max-width: none; padding: 0; }
               a { color: inherit; text-decoration: underline; }
               h1, h2, h3, h4, h5, h6 { break-after: avoid-page; }
-              p, blockquote, img, pre, table, .table-scroll { break-inside: avoid-page; }
+              p, blockquote, img, pre, table, .table-scroll, .mermaid-diagram { break-inside: avoid-page; }
               pre {
                 overflow: visible;
                 white-space: pre-wrap;
@@ -383,6 +394,7 @@ struct MarkdownHTMLRenderer {
         </head>
         <body>
         \#(bodyElement)
+        \#(scripts)
         </body>
         </html>
         """#
